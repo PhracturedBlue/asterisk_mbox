@@ -2,13 +2,7 @@
 AsteriskVM
 ==========
 AsteriskVM is a client/server which provides an API to work with Asterisk voicemail mailboxes
-
-Dependencies
-============
-
-* Linux ≥ 2.6.13
-* Python ≥ 3.4
-* Lame
+This is the client library.  Install asteriskvm_server on the Asterisk server as well.
 
 Capabilities
 ============

@@ -1,3 +1,3 @@
 #!/usr/bin/env python
-from asteriskvm.client import main
+from asteriskvm import main
 main()
