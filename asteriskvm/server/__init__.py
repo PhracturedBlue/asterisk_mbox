@@ -19,17 +19,7 @@ import inotify.adapters
 import asteriskvm.commands as cmd
 from asteriskvm.utils import PollableQueue, recv_blocking
 
-def do_some_stuffs_with_input(input_string):
-    """
-    This is where all the processing happens.
-
-    Let's just read the string backwards
-    """
-
-    logging.info("Processing that nasty input!")
-    return input_string[::-1]
-
-def parse_request(msg):
+def _parse_request(msg):
     """Parse request from client"""
     request = {}
     request['cmd'] = msg[0]
@@ -37,78 +27,7 @@ def parse_request(msg):
     request['sha'] = msg[2:66].decode('utf-8')
     return request
 
-def sha_to_fname(status, sha):
-    """Find fname from sha256"""
-    for fname in status:
-        if sha == status[fname]['sha']:
-            return fname
-    return None
-
-def send(conn, command, msg):
-    """Send message prefixed by length"""
-    msglen = len(msg)
-    msglen = bytes([msglen >> 24,
-                    0xff & (msglen >> 16),
-                    0xff & (msglen >> 8),
-                    0xff & (msglen >> 0)])
-    conn.send(bytes([command]) + msglen + msg)
-
-def client_thread(conn, mboxqueue, password):
-    """Thread to handle a single TCP conection"""
-    status = mboxqueue.get()
-    accept_pw = False
-    while True:
-        readable, dummy_writable, dummy_errored = select.select([conn, mboxqueue], [], [])
-        if conn in readable:
-            try:
-                request = parse_request(recv_blocking(conn, 66))
-            except RuntimeError:
-                logging.warning("Connection closed")
-                break
-            logging.debug(request)
-            if request['cmd'] == cmd.CMD_MESSAGE_PASSWORD:
-                accept_pw = password == request['sha']
-                logging.info("Password accepted")
-            if not accept_pw:
-                logging.warning("Password rejected")
-                send(conn, cmd.CMD_MESSAGE_PASSWORD, b'FAIL')
-            else:
-                if request['cmd'] == cmd.CMD_MESSAGE_LIST:
-                    logging.debug("Requested Message List")
-                    send(conn, cmd.CMD_MESSAGE_LIST, json.dumps(status).encode('utf-8'))
-                elif request['cmd'] == cmd.CMD_MESSAGE_MP3:
-                    fname = sha_to_fname(status, request['sha'])
-                    logging.debug("Requested MP3 for %s ==> %s", request['sha'], fname)
-                    if fname:
-                        msg = mp3(fname + ".wav")
-                        send(conn, cmd.CMD_MESSAGE_MP3, msg)
-                    else:
-                        send(conn, cmd.CMD_MESSAGE_MP3, b'')
-        if mboxqueue in readable:
-            status = mboxqueue.get()
-            mboxqueue.task_done()
-            #logging.info(status)
-            send(conn, cmd.CMD_MESSAGE_LIST, json.dumps(status).encode('utf-8'))
-
-def sha256(fname):
-    """Get SHA256 sum of a file contents"""
-    sha = hashlib.sha256()
-    with open(fname, "rb") as infile:
-        for chunk in iter(lambda: infile.read(4096), b""):
-            sha.update(chunk)
-    return sha.hexdigest()
-
-def parse_msg_header(fname):
-    """Parse asterisk voicemail metadata"""
-    ini = configparser.ConfigParser()
-    ini.read(fname)
-    try:
-        return dict(ini.items('message'))
-    except configparser.NoSectionError:
-        logging.exception("Couldn't parse: %s", fname)
-        return
-
-def mp3(fname):
+def _mp3(fname):
     """Convert WAV to MP3 using LAME"""
     try:
         process = subprocess.Popen(["lame", "--abr", "24", "-mm", "-h", "-c",
@@ -120,9 +39,93 @@ def mp3(fname):
         logging.exception("Failed To execute lame")
         return
 
-class WatchMailBox:
+class Connection(Thread):
+    """Thread to handle a single TCP conection"""
+    def __init__(self, conn, status, mboxqueue, password):
+        Thread.__init__(self)
+
+        self.conn = conn
+        self.status = status
+        self.mboxq = mboxqueue
+        self.password = password
+        self.accept_pw = False
+
+    def _sha_to_fname(self, sha):
+        """Find fname from sha256"""
+        for fname in self.status:
+            if sha == self.status[fname]['sha']:
+                return fname
+        return None
+
+    def _send(self, command, msg):
+        """Send message prefixed by length"""
+        msglen = len(msg)
+        msglen = bytes([msglen >> 24,
+                        0xff & (msglen >> 16),
+                        0xff & (msglen >> 8),
+                        0xff & (msglen >> 0)])
+        self.conn.send(bytes([command]) + msglen + msg)
+
+    def _handle_request(self, request):
+        if request['cmd'] == cmd.CMD_MESSAGE_PASSWORD:
+            self.accept_pw = self.password == request['sha']
+            logging.info("Password accepted")
+        if not self.accept_pw:
+            logging.warning("Password rejected")
+            self._send(cmd.CMD_MESSAGE_PASSWORD, b'FAIL')
+        elif request['cmd'] == cmd.CMD_MESSAGE_LIST:
+            logging.debug("Requested Message List")
+            self._send(cmd.CMD_MESSAGE_LIST, json.dumps(self.status).encode('utf-8'))
+        elif request['cmd'] == cmd.CMD_MESSAGE_MP3:
+            fname = self._sha_to_fname(request['sha'])
+            logging.debug("Requested MP3 for %s ==> %s", request['sha'], fname)
+            msg = b''
+            if fname:
+                msg = _mp3(fname + ".wav")
+            self._send(cmd.CMD_MESSAGE_MP3, msg)
+
+    def run(self):
+        """Thread main loop"""
+        while True:
+            readable, dummy_w, dummy_e = select.select([self.conn, self.mboxq], [], [])
+            if self.conn in readable:
+                try:
+                    request = _parse_request(recv_blocking(self.conn, 66))
+                except RuntimeError:
+                    logging.warning("Connection closed")
+                    break
+                logging.debug(request)
+                self._handle_request(request)
+
+            if self.mboxq in readable:
+                self.status = self.mboxq.get()
+                self.mboxq.task_done()
+                #logging.info(self.status)
+                self._send(cmd.CMD_MESSAGE_LIST, json.dumps(self.status).encode('utf-8'))
+
+def _sha256(fname):
+    """Get SHA256 sum of a file contents"""
+    sha = hashlib.sha256()
+    with open(fname, "rb") as infile:
+        for chunk in iter(lambda: infile.read(4096), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+def _parse_msg_header(fname):
+    """Parse asterisk voicemail metadata"""
+    ini = configparser.ConfigParser()
+    ini.read(fname)
+    try:
+        return dict(ini.items('message'))
+    except configparser.NoSectionError:
+        logging.exception("Couldn't parse: %s", fname)
+        return
+
+class WatchMailBox(Thread):
     """Thread to watch for new/removed messages in a mailbox"""
     def __init__(self, mbox_queue, path, stt_file, sr_keys):
+        Thread.__init__(self)
+
         self.mbox_queue = mbox_queue
         self.path = path
         self.stt_file = stt_file
@@ -133,18 +136,18 @@ class WatchMailBox:
         if os.path.isfile(stt_file):
             with open(stt_file, 'rb') as infile:
                 self.cache = pickle.load(infile)
-        self.save_cache()
+        self._save_cache()
         self.inot = inotify.adapters.Inotify()
         for subdir in self.subdirs:
             directory = os.path.join(self.path, subdir)
             self.inot.add_watch(directory.encode('utf-8'))
 
-    def save_cache(self):
+    def _save_cache(self):
         """Save cache data"""
         with open(self.stt_file, 'wb') as outfile:
             pickle.dump(self.cache, outfile, pickle.HIGHEST_PROTOCOL)
 
-    def speech_to_text(self, fname):
+    def _speech_to_text(self, fname):
         """Convert WAV to text"""
         txt = ""
         logging.debug('STT ' + fname)
@@ -160,7 +163,7 @@ class WatchMailBox:
         logging.debug("Parsed %s --> %s", fname, txt)
         return txt
 
-    def get_mbox_status(self):
+    def _get_mbox_status(self):
         """Parse all messages ina mailbox"""
         data = {}
         for subdir in self.subdirs:
@@ -177,9 +180,9 @@ class WatchMailBox:
                 if basename not in data:
                     data[basename] = {}
                 if ext == '.txt':
-                    data[basename]['info'] = parse_msg_header(filename)
+                    data[basename]['info'] = _parse_msg_header(filename)
                 elif ext == '.wav':
-                    data[basename]['sha'] = sha256(filename)
+                    data[basename]['sha'] = _sha256(filename)
                     data[basename]['wav'] = filename
         for fname, ref in data.items():
             if 'info' not in ref or 'sha' not in ref or not os.path.isfile(fname + '.wav'):
@@ -190,23 +193,23 @@ class WatchMailBox:
             if sha not in self.cache:
                 self.cache[sha] = {}
             if 'txt' not in self.cache[sha]:
-                self.cache[sha]['txt'] = self.speech_to_text(fname + '.wav')
-                self.save_cache()
+                self.cache[sha]['txt'] = self._speech_to_text(fname + '.wav')
+                self._save_cache()
             logging.debug("SHA (%s): %s", fname, sha)
             ref['text'] = self.cache[sha]['txt']
         return data
 
-    def mbox_watch(self):
-        """Thread to watch for new/removed messages in a mailbox"""
-        status = self.get_mbox_status()
+    def run(self):
+        """Main Loop"""
+        status = self._get_mbox_status()
         self.mbox_queue.put(status)
         try:
             for event in self.inot.event_gen():
                 if event is not None:
-                    (dummy_header, type_names, dummy_watch_path, dummy_filename) = event
+                    (_header, type_names, _watch_path, _filename) = event
                     if type_names in ('IN_DELETE', 'IN_CLOSE_WRITE',
                                       'IN_MOVED_FROM', 'IN_MOVED_TO'):
-                        status = self.get_mbox_status()
+                        status = self._get_mbox_status()
                         self.mbox_queue.put(status)
         finally:
             for subdir in self.subdirs:
@@ -216,6 +219,7 @@ class WatchMailBox:
 # pylint: disable=too-many-locals
 def main():
     """Main thread"""
+    logging.basicConfig(format="%(levelname)-10s %(message)s", level=logging.DEBUG)
 
     if len(sys.argv) != 2:
         print("Must specify configuration file")
@@ -225,7 +229,6 @@ def main():
 
     password = config.get('default', 'password')
     password = hashlib.sha256(password.encode('utf-8')).hexdigest()
-    logging.basicConfig(format="%(levelname)-10s %(message)s", level=logging.DEBUG)
 
     soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -235,16 +238,15 @@ def main():
     except socket.error:
         logging.exception('Bind failed.')
         sys.exit()
-
     soc.listen(10)
+
     mbox_queue = PollableQueue()
     mailbox = WatchMailBox(mbox_queue,
                            config.get('default', 'mbox_path'),
                            config.get('default', 'cache_file'),
                            {'GOOGLE_KEY': config.get('default', 'google_key')})
-    thread = Thread(target=mailbox.mbox_watch)
-    thread.setDaemon(True)
-    thread.start()
+    mailbox.setDaemon(True)
+    mailbox.start()
 
     clients = []
     status = {}
@@ -255,15 +257,12 @@ def main():
             ipaddr, port = str(addr[0]), str(addr[1])
             logging.info('Accepting connection from ' + ipaddr + ':' + port)
 
-            # Create a pair of connected sockets
-
             try:
                 que = PollableQueue()
-                thread = Thread(target=client_thread, args=(conn, que, password))
+                thread = Connection(conn, status, que, password)
                 thread.setDaemon(True)
                 thread.start()
                 clients.append((thread, que))
-                que.put(status)
             except Exception: # pylint: disable=broad-except
                 logging.exception("Terible error!")
         clients = [(thread, que) for thread, que in clients if thread.isAlive()]

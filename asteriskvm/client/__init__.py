@@ -7,6 +7,7 @@ import json
 import time
 import hashlib
 import configparser
+import logging
 
 from threading import Thread
 from asteriskvm.utils import PollableQueue, recv_blocking
@@ -14,7 +15,7 @@ from asteriskvm.utils import PollableQueue, recv_blocking
 import asteriskvm.commands as cmd
 
 
-def build_request(request):
+def _build_request(request):
     """Build message to transfer over the socket from a request"""
     msg = bytes([request['cmd']])
     if 'dest' in request:
@@ -26,28 +27,31 @@ def build_request(request):
     else:
         for dummy in range(64):
             msg += b'0'
-    print(msg)
-    print(len(msg))
+    logging.debug("Request (%d): %s", len(msg), msg)
     return msg
 
 class Client:
     """asteriskvm client"""
-    def __init__(self, ipaddr, port, password):
+    def __init__(self, ipaddr, port, password, callback=None):
         """constructor"""
         self.ipaddr = ipaddr
         self.port = port
         self.password = password
+        self.callback = callback
         self.soc = None
         # Send data to the server
         self.request_queue = PollableQueue()
         # Receive data from the server
-        self.result_queue = PollableQueue()
-        self.connect()
+        if not callback:
+            self.result_queue = PollableQueue()
+        else:
+            self.result_queue = None
+        self._connect()
         self.thread = Thread(target=self.loop)
         self.thread.setDaemon(True)
         self.thread.start()
 
-    def connect(self):
+    def _connect(self):
         """connect to server"""
         self.soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         while True:
@@ -55,11 +59,11 @@ class Client:
                 self.soc.connect((self.ipaddr, self.port))
                 break
             except ConnectionRefusedError:
-                print("Connection Refused")
+                logging.warning("Connection Refused")
                 time.sleep(5)
-        self.soc.send(build_request({'cmd': cmd.CMD_MESSAGE_PASSWORD, 'sha': self.password}))
+        self.soc.send(_build_request({'cmd': cmd.CMD_MESSAGE_PASSWORD, 'sha': self.password}))
 
-    def recv_msg(self):
+    def _recv_msg(self):
         """Read a message from the server"""
         command = ord(recv_blocking(self.soc, 1))
         msglen = recv_blocking(self.soc, 4)
@@ -72,82 +76,92 @@ class Client:
         """Polling loop"""
         request = {}
         status = {}
-        self.soc.send(build_request({'cmd': cmd.CMD_MESSAGE_LIST}))
-        while not status:
-            try:
-                command, msg = self.recv_msg()
-            except RuntimeError:
-                print("Lost connection")
-                self.connect()
-                continue
-            if command == cmd.CMD_MESSAGE_LIST:
-                status = json.loads(msg.decode('utf-8'))
+        self.soc.send(_build_request({'cmd': cmd.CMD_MESSAGE_LIST}))
         while True:
             readable, dummy_writable, dummy_errored = select.select([self.soc,
                                                                      self.request_queue], [], [])
             if self.soc in readable:
                 # We have incoming data
                 try:
-                    command, msg = self.recv_msg()
+                    command, msg = self._recv_msg()
                 except RuntimeError:
-                    print("Lost connection")
-                    self.connect()
+                    logging.warning("Lost connection")
+                    self._connect()
                     continue
-                if command == cmd.CMD_MESSAGE_LIST:
-                    print("Got CMD_MESSAGE_LIST")
-                    status = json.loads(msg.decode('utf-8'))
-                    if request and request['cmd'] == cmd.CMD_MESSAGE_LIST:
-                        if self.result_queue:
+                if not self.result_queue:
+                    if command == cmd.CMD_MESSAGE_LIST:
+                        msg = json.loads(msg.decode('utf-8'))
+                    self.callback(command, msg)
+                else:
+                    if command == cmd.CMD_MESSAGE_LIST:
+                        logging.debug("Got CMD_MESSAGE_LIST")
+                        status = json.loads(msg.decode('utf-8'))
+                        if request and request['cmd'] == cmd.CMD_MESSAGE_LIST:
                             self.result_queue.put(status)
-                        request = {}
-                elif command == cmd.CMD_MESSAGE_MP3:
-                    print("Got CMD_MESSAGE_MP3")
-                    if request and request['cmd'] == cmd.CMD_MESSAGE_MP3:
-                        if self.result_queue:
+                            request = {}
+                    elif command == cmd.CMD_MESSAGE_MP3:
+                        logging.debug("Got CMD_MESSAGE_MP3")
+                        if request and request['cmd'] == cmd.CMD_MESSAGE_MP3:
                             self.result_queue.put(msg)
-                        request = {}
+                            request = {}
+                    elif command == cmd.CMD_MESSAGE_DELETE:
+                        logging.debug("Got CMD_MESSAGE_DELETE")
+                        if request and request['cmd'] == cmd.CMD_MESSAGE_DELETE:
+                            self.result_queue.put(msg)
+                            request = {}
 
             if self.request_queue in readable:
                 request = self.request_queue.get()
                 self.request_queue.task_done()
-                if request['cmd'] == cmd.CMD_MESSAGE_LIST:
-                    if self.result_queue:
-                        self.result_queue.put(status)
+                if request['cmd'] == cmd.CMD_MESSAGE_LIST and self.result_queue and status:
+                    self.result_queue.put(status)
                     request = {}
                 else:
-                    self.soc.send(build_request(request))
+                    self.soc.send(_build_request(request))
 
     def messages(self):
         """How many messages are available"""
         self.request_queue.put({'cmd': cmd.CMD_MESSAGE_LIST})
-        return self.result_queue.get()
-
-    def num_messages(self):
-        """How many messages are available"""
-        status = self.messages()
-        return len(status.keys())
+        if self.result_queue:
+            return self.result_queue.get()
 
     def mp3(self, sha):
         """How many messages are available"""
         self.request_queue.put({'cmd': cmd.CMD_MESSAGE_MP3, 'sha': sha})
-        return self.result_queue.get()
+        if self.result_queue:
+            return self.result_queue.get()
+
+    def delete(self, sha):
+        """How many messages are available"""
+        self.request_queue.put({'cmd': cmd.CMD_MESSAGE_DELETE, 'sha': sha})
+        if self.result_queue:
+            return self.result_queue.get()
+
+def _callback(command, message):
+    logging.debug("Async: %d: %s", command, message)
 
 def main():
     """Main thread"""
+    __async__ = True
+    logging.basicConfig(format="%(levelname)-10s %(message)s", level=logging.DEBUG)
 
     if len(sys.argv) != 2:
-        print("Must specify configuration file")
+        logging.error("Must specify configuration file")
         sys.exit()
     config = configparser.ConfigParser()
     config.read(sys.argv[1])
 
     password = config.get('default', 'password')
     password = hashlib.sha256(password.encode('utf-8')).hexdigest().encode('utf-8')
-    client = Client(config.get('default', 'host'), config.getint('default', 'port'), password)
-    status = client.messages()
-    key = list(status.keys())[0]
-    print(key)
-    print(client.mp3(status[key]['sha'].encode('utf-8')))
+    if __async__:
+        client = Client(config.get('default', 'host'),
+                        config.getint('default', 'port'), password, _callback)
+    else:
+        client = Client(config.get('default', 'host'), config.getint('default', 'port'), password)
+        status = client.messages()
+        key = list(status.keys())[0]
+        print(key)
+        print(client.mp3(status[key]['sha'].encode('utf-8')))
     while True:
         continue
 
