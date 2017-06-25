@@ -84,7 +84,7 @@ class Client:
                 # We have incoming data
                 try:
                     command, msg = self._recv_msg()
-                except RuntimeError:
+                except (RuntimeError, ConnectionResetError):
                     logging.warning("Lost connection")
                     self._connect()
                     continue
