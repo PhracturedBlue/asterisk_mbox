@@ -13,6 +13,7 @@ AsteriskVM is a client/server which provides an API to work with Asterisk voicem
 * Display all metadata for all messages stored in a single mailbox
 * Convert messages to text using Google's speech-to-text service
 * Retrieve the audio of a message in MP3 format
+* Support both synchronous and asynchronous API
 
 ## Future work
 * Support deleting messages
