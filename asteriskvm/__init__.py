@@ -36,7 +36,7 @@ class Client:
         """constructor"""
         self.ipaddr = ipaddr
         self.port = port
-        self.password = password
+        self.password = hashlib.sha256(password.encode('utf-8')).hexdigest().encode('utf-8')
         self.callback = callback
         self.soc = None
         # Send data to the server
@@ -152,7 +152,6 @@ def main():
     config.read(sys.argv[1])
 
     password = config.get('default', 'password')
-    password = hashlib.sha256(password.encode('utf-8')).hexdigest().encode('utf-8')
     if __async__:
         client = Client(config.get('default', 'host'),
                         config.getint('default', 'port'), password, _callback)
