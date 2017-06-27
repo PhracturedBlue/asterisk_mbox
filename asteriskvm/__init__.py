@@ -35,7 +35,7 @@ class Client:
         """constructor"""
         self.ipaddr = ipaddr
         self.port = port
-        self.password = password.encode('utf-8')
+        self.password = encode_password(password).encode('utf-8')
         self.callback = callback
         self.soc = None
         # Send data to the server
@@ -152,7 +152,7 @@ def main():
     config = configparser.ConfigParser()
     config.read(sys.argv[1])
 
-    password = encode_password(config.get('default', 'password'))
+    password = config.get('default', 'password')
     if __async__:
         client = Client(config.get('default', 'host'),
                         config.getint('default', 'port'), password, _callback)
