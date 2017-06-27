@@ -74,5 +74,5 @@ def compare_password(expected, actual):
     if expected[:-8] != actual[:-8]:
         msg.append("Password mismatch")
     if ver_exp != ver_act:
-        msg.append("Client version '" + ver_act + "' != server version '" + ver_exp + "'")
+        msg.append("asteriskvm version mismatch.  Client: '" + ver_act + "',  Server: '" + ver_exp + "'")
     return False, ". ".join(msg)
