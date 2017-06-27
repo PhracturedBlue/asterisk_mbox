@@ -1,4 +1,4 @@
-""" asteriskvm_client.py -- Do stuff"""
+""" asterisk_mbox_client.py -- Do stuff"""
 
 import sys
 import socket
@@ -9,9 +9,9 @@ import configparser
 import logging
 
 from threading import Thread
-from asteriskvm.utils import PollableQueue, recv_blocking, encode_password
+from asterisk_mbox.utils import PollableQueue, recv_blocking, encode_password
 
-import asteriskvm.commands as cmd
+import asterisk_mbox.commands as cmd
 
 
 def _build_request(request):
@@ -30,7 +30,7 @@ def _build_request(request):
     return msg
 
 class Client:
-    """asteriskvm client"""
+    """asterisk_mbox client"""
     def __init__(self, ipaddr, port, password, callback=None):
         """constructor"""
         self.ipaddr = ipaddr
@@ -121,13 +121,13 @@ class Client:
                     self.soc.send(_build_request(request))
 
     def messages(self):
-        """How many messages are available"""
+        """Get list of messages with metadata"""
         self.request_queue.put({'cmd': cmd.CMD_MESSAGE_LIST})
         if self.result_queue:
             return self.result_queue.get()
 
     def mp3(self, sha):
-        """How many messages are available"""
+        """Get raw MP3 of a message"""
         self.request_queue.put({'cmd': cmd.CMD_MESSAGE_MP3, 'sha': sha})
         if self.result_queue:
             return self.result_queue.get()
@@ -159,9 +159,9 @@ def main():
     else:
         client = Client(config.get('default', 'host'), config.getint('default', 'port'), password)
         status = client.messages()
-        key = list(status.keys())[0]
-        print(key)
-        print(client.mp3(status[key]['sha'].encode('utf-8')))
+        msg = status[0]
+        print(msg)
+        print(client.mp3(msg['sha'].encode('utf-8')))
     while True:
         continue
 

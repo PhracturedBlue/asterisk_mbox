@@ -1,4 +1,4 @@
-"""Utility classes for use in the asteriskvm"""
+"""Utility classes for use in the asterisk_mbox"""
 
 import queue
 import os
@@ -59,7 +59,7 @@ def recv_blocking(conn, msglen):
     return msg
 
 def encode_password(password):
-    """Hash password and append current asteriskvm version"""
+    """Hash password and append current asterisk_mbox version"""
     return(hashlib.sha256(password.encode('utf-8')).hexdigest()[:-8] +
            (__version__ + "        ")[:8])
 
@@ -74,5 +74,5 @@ def compare_password(expected, actual):
     if expected[:-8] != actual[:-8]:
         msg.append("Password mismatch")
     if ver_exp != ver_act:
-        msg.append("asteriskvm version mismatch.  Client: '" + ver_act + "',  Server: '" + ver_exp + "'")
+        msg.append("asterisk_mbox version mismatch.  Client: '" + ver_act + "',  Server: '" + ver_exp + "'")
     return False, ". ".join(msg)

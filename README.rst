@@ -1,8 +1,8 @@
 ==========
-AsteriskVM
+asterisk_mbox
 ==========
-AsteriskVM is a client/server which provides an API to work with Asterisk voicemail mailboxes
-This is the client library.  Install asteriskvm_server on the Asterisk server as well.
+asterisk_mbox is a client/server which provides an API to work with Asterisk voicemail mailboxes
+This is the client library.  Install asterisk_mbox_server on the Asterisk server as well.
 
 Capabilities
 ============
