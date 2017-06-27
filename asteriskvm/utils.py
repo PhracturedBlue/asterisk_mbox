@@ -4,6 +4,9 @@ import queue
 import os
 import socket
 import logging
+import hashlib
+
+__version__ = "0.2.3"
 
 class PollableQueue(queue.Queue):
     """Queue which allows using select"""
@@ -33,8 +36,12 @@ class PollableQueue(queue.Queue):
 
     def get(self, block=True, timeout=None):
         """get"""
-        self._getsocket.recv(1)
-        return super().get(block, timeout)
+        try:
+            item = super().get(block, timeout)
+            self._getsocket.recv(1)
+            return item
+        except queue.Empty:
+            raise queue.Empty
 
 def recv_blocking(conn, msglen):
     """Recieve data until msglen bytes have been received"""
@@ -50,3 +57,22 @@ def recv_blocking(conn, msglen):
         logging.debug("Msglen: %d of %d", len(msg), msglen)
     logging.debug("Message: %s", msg)
     return msg
+
+def encode_password(password):
+    """Hash password and append current asteriskvm version"""
+    return(hashlib.sha256(password.encode('utf-8')).hexdigest()[:-8] +
+           (__version__ + "        ")[:8])
+
+def compare_password(expected, actual):
+    """Compare to 64byte encoded passwords for both hash-match and version match"""
+    if expected == actual:
+        return True, "OK"
+    msg = []
+    ver_exp = expected[-8:].rstrip()
+    ver_act = actual[-8:].rstrip()
+
+    if expected[:-8] != actual[:-8]:
+        msg.append("Password mismatch")
+    if ver_exp != ver_act:
+        msg.append("Client version '" + ver_act + "' != server version '" + ver_exp + "'")
+    return False, ". ".join(msg)

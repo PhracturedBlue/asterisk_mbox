@@ -5,12 +5,11 @@ import socket
 import select
 import json
 import time
-import hashlib
 import configparser
 import logging
 
 from threading import Thread
-from asteriskvm.utils import PollableQueue, recv_blocking
+from asteriskvm.utils import PollableQueue, recv_blocking, encode_password
 
 import asteriskvm.commands as cmd
 
@@ -36,7 +35,7 @@ class Client:
         """constructor"""
         self.ipaddr = ipaddr
         self.port = port
-        self.password = hashlib.sha256(password.encode('utf-8')).hexdigest().encode('utf-8')
+        self.password = password.encode('utf-8')
         self.callback = callback
         self.soc = None
         # Send data to the server
@@ -151,7 +150,7 @@ def main():
     config = configparser.ConfigParser()
     config.read(sys.argv[1])
 
-    password = config.get('default', 'password')
+    password = encode_password(config.get('default', 'password'))
     if __async__:
         client = Client(config.get('default', 'host'),
                         config.getint('default', 'port'), password, _callback)
