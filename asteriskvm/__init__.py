@@ -87,6 +87,8 @@ class Client:
                     logging.warning("Lost connection")
                     self._connect()
                     continue
+                if command == cmd.CMD_MESSAGE_PASSWORD:
+                    logging.warning("Bad password: %s", msg.decode('utf-8'))
                 if not self.result_queue:
                     if command == cmd.CMD_MESSAGE_LIST:
                         msg = json.loads(msg.decode('utf-8'))
