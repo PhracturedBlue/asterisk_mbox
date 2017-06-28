@@ -1,4 +1,4 @@
-"""Utility classes for use in the asterisk_mbox"""
+"""Utility classes for use in the asterisk_mbox."""
 
 import queue
 import os
@@ -6,11 +6,14 @@ import socket
 import logging
 import hashlib
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
+
 
 class PollableQueue(queue.Queue):
-    """Queue which allows using select"""
+    """Queue which allows using select."""
+
     def __init__(self):
+        """Constructor."""
         super().__init__()
         # Create a pair of connected sockets
         if os.name == 'posix':
@@ -26,16 +29,16 @@ class PollableQueue(queue.Queue):
             server.close()
 
     def fileno(self):
-        """fileno"""
+        """fileno."""
         return self._getsocket.fileno()
 
     def put(self, item, block=True, timeout=None):
-        """put"""
+        """put."""
         super().put(item, block, timeout)
         self._putsocket.send(b'x')
 
     def get(self, block=True, timeout=None):
-        """get"""
+        """get."""
         try:
             item = super().get(block, timeout)
             self._getsocket.recv(1)
@@ -43,8 +46,9 @@ class PollableQueue(queue.Queue):
         except queue.Empty:
             raise queue.Empty
 
+
 def recv_blocking(conn, msglen):
-    """Recieve data until msglen bytes have been received"""
+    """Recieve data until msglen bytes have been received."""
     msg = b''
     while len(msg) < msglen:
         maxlen = msglen-len(msg)
@@ -58,13 +62,15 @@ def recv_blocking(conn, msglen):
     logging.debug("Message: %s", msg)
     return msg
 
+
 def encode_password(password):
-    """Hash password and append current asterisk_mbox version"""
+    """Hash password and append current asterisk_mbox version."""
     return(hashlib.sha256(password.encode('utf-8')).hexdigest()[:-8] +
            (__version__ + "        ")[:8])
 
+
 def compare_password(expected, actual):
-    """Compare to 64byte encoded passwords for both hash-match and version match"""
+    """Compare two 64byte encoded passwords."""
     if expected == actual:
         return True, "OK"
     msg = []
@@ -74,5 +80,6 @@ def compare_password(expected, actual):
     if expected[:-8] != actual[:-8]:
         msg.append("Password mismatch")
     if ver_exp != ver_act:
-        msg.append("asterisk_mbox version mismatch.  Client: '" + ver_act + "',  Server: '" + ver_exp + "'")
+        msg.append("asterisk_mbox version mismatch.  Client: '" +
+                   ver_act + "',  Server: '" + ver_exp + "'")
     return False, ". ".join(msg)
