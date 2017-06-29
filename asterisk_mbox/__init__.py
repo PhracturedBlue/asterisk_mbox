@@ -139,6 +139,7 @@ class Client:
             if not connected:
                 try:
                     self._clear_request(request)
+                    self._connect()
                     self._soc.send(_build_request(
                         {'cmd': cmd.CMD_MESSAGE_LIST}))
                     connected = True
