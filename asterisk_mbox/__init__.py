@@ -7,11 +7,17 @@ import json
 import configparser
 import logging
 
+import queue
 import threading
 
 from asterisk_mbox.utils import PollableQueue, recv_blocking, encode_password
 
 import asterisk_mbox.commands as cmd
+
+
+class ServerError(Exception):
+    """Server reported an error during synchronous tranfer."""
+    pass
 
 
 def _build_request(request):
@@ -31,7 +37,7 @@ def _build_request(request):
 
 
 def _get_bytes(data):
-    """Ensdure data is type 'bytes'."""
+    """Ensure data is type 'bytes'."""
     if isinstance(data, str):
         return data.encode('utf-8')
     return data
@@ -42,14 +48,16 @@ class Client:
 
     def __init__(self, ipaddr, port, password, callback=None, **kwargs):
         """constructor."""
-        self.ipaddr = ipaddr
-        self.port = port
-        self.password = encode_password(password).encode('utf-8')
-        self.callback = callback
-        self.soc = None
-        self.signal = threading.Event()
-        self.signal.set()
+        self._ipaddr = ipaddr
+        self._port = port
+        self._password = encode_password(password).encode('utf-8')
+        self._callback = callback
+        self._soc = None
+        self._thread = None
+        self._status = {}
 
+        # Stop thread
+        self.signal = PollableQueue()
         # Send data to the server
         self.request_queue = PollableQueue()
         # Receive data from the server
@@ -59,101 +67,127 @@ class Client:
 
     def start(self):
         """Start thread."""
-        if self.signal.is_set():
+        if not self._thread:
             logging.info("Starting asterisk mbox thread")
-            self.signal.clear()
-            self._connect()
-            self.thread = threading.Thread(target=self.loop)
-            self.thread.setDaemon(True)
-            self.thread.start()
+            # Ensure signal queue is empty
+            try:
+                while True:
+                    self.signal.get(False)
+            except queue.Empty:
+                pass
+            self._thread = threading.Thread(target=self._loop)
+            self._thread.setDaemon(True)
+            self._thread.start()
 
     def stop(self):
         """Stop thread."""
-        self.signal.set()
-        self.thread.join()
-        self.soc.shutdown()
-        self.soc.close()
+        if self._thread:
+            self.signal.put("Stop")
+            self._thread.join()
+            if self._soc:
+                self._soc.shutdown()
+                self._soc.close()
+            self._thread = None
 
     def _connect(self):
         """Connect to server."""
-        self.soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        while not self.signal.is_set():
-            try:
-                self.soc.connect((self.ipaddr, self.port))
-                self.soc.send(_build_request({'cmd': cmd.CMD_MESSAGE_PASSWORD,
-                                              'sha': self.password}))
-                break
-            except ConnectionRefusedError:
-                logging.warning("Connection Refused")
-                self.signal.wait(5.0)
+        self._soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._soc.connect((self._ipaddr, self._port))
+        self._soc.send(_build_request({'cmd': cmd.CMD_MESSAGE_PASSWORD,
+                                       'sha': self._password}))
 
     def _recv_msg(self):
         """Read a message from the server."""
-        command = ord(recv_blocking(self.soc, 1))
-        msglen = recv_blocking(self.soc, 4)
+        command = ord(recv_blocking(self._soc, 1))
+        msglen = recv_blocking(self._soc, 4)
         msglen = ((msglen[0] << 24) + (msglen[1] << 16) +
                   (msglen[2] << 8) + msglen[3])
-        msg = recv_blocking(self.soc, msglen)
+        msg = recv_blocking(self._soc, msglen)
         return command, msg
 
-    # pylint: disable=too-many-branches
-    def loop(self):
+    def _handle_msg(self, command, msg, request):
+        if command == cmd.CMD_MESSAGE_ERROR:
+            logging.warning("Received error: %s", msg.decode('utf-8'))
+        elif command == cmd.CMD_MESSAGE_LIST:
+            self._status = json.loads(msg.decode('utf-8'))
+            msg = self._status
+
+        if self._callback and 'sync' not in request:
+            self._callback(command, msg)
+        elif request and (command == request.get('cmd') or
+                          command == cmd.CMD_MESSAGE_ERROR):
+            logging.debug("Got command: %s", cmd.commandstr(command))
+            self.result_queue.put([command, msg])
+            request.clear()
+        else:
+            logging.debug("Got unhandled command: %s",
+                          cmd.commandstr(command))
+
+    def _clear_request(self, request):
+        if not self._callback or 'sync' in request:
+            self.result_queue.put(
+                [cmd.CMD_MESSAGE_ERROR, "Not connected to server"])
+        request.clear()
+
+    def _loop(self):
         """Handle data."""
         request = {}
-        status = {}
-        self.soc.send(_build_request({'cmd': cmd.CMD_MESSAGE_LIST}))
-        while not self.signal.is_set():
-            readable, _writable, _errored = select.select([self.soc,
-                                                           self.request_queue],
-                                                          [], [])
-            if self.soc in readable:
+        connected = False
+        while True:
+            timeout = None
+            sockets = [self.request_queue, self.signal]
+            if not connected:
+                try:
+                    self._clear_request(request)
+                    self._soc.send(_build_request(
+                        {'cmd': cmd.CMD_MESSAGE_LIST}))
+                    connected = True
+                except ConnectionRefusedError:
+                    timeout = 5.0
+            if connected:
+                sockets.append(self._soc)
+
+            readable, _writable, _errored = select.select(
+                sockets, [], [], timeout)
+
+            if self.signal in readable:
+                break
+
+            if self._soc in readable:
                 # We have incoming data
                 try:
                     command, msg = self._recv_msg()
+                    self._handle_msg(command, msg, request)
                 except (RuntimeError, ConnectionResetError):
                     logging.warning("Lost connection")
-                    self._connect()
-                    continue
-                if command == cmd.CMD_MESSAGE_PASSWORD:
-                    logging.warning("Bad password: %s", msg.decode('utf-8'))
-                if self.callback and command != cmd.CMD_MESSAGE_MP3:
-                    if command == cmd.CMD_MESSAGE_LIST:
-                        msg = json.loads(msg.decode('utf-8'))
-                    self.callback(command, msg)
-                else:
-                    if command == cmd.CMD_MESSAGE_LIST:
-                        logging.debug("Got CMD_MESSAGE_LIST")
-                        status = json.loads(msg.decode('utf-8'))
-                        if request and request['cmd'] == cmd.CMD_MESSAGE_LIST:
-                            self.result_queue.put(status)
-                            request = {}
-                    elif command == cmd.CMD_MESSAGE_MP3:
-                        logging.debug("Got CMD_MESSAGE_MP3")
-                        if request and request['cmd'] == cmd.CMD_MESSAGE_MP3:
-                            self.result_queue.put(msg)
-                            request = {}
-                    elif command == cmd.CMD_MESSAGE_DELETE:
-                        logging.debug("Got CMD_MESSAGE_DELETE")
-                        if (request and
-                                request['cmd'] == cmd.CMD_MESSAGE_DELETE):
-                            self.result_queue.put(msg)
-                            request = {}
+                    connected = False
+                    self._clear_request(request)
 
             if self.request_queue in readable:
                 request = self.request_queue.get()
                 self.request_queue.task_done()
-                if (request['cmd'] == cmd.CMD_MESSAGE_LIST and
-                        not self.callback and status):
-                    self.result_queue.put(status)
-                    request = {}
+                if not connected:
+                    self._clear_request(request)
                 else:
-                    self.soc.send(_build_request(request))
+                    if (request['cmd'] == cmd.CMD_MESSAGE_LIST and
+                            self._status and
+                            (not self._callback or 'sync' in request)):
+                        self.result_queue.put(
+                            [cmd.CMD_MESSAGE_LIST, self._status])
+                        request = {}
+                    else:
+                        self._soc.send(_build_request(request))
 
     def _queue_msg(self, item, **kwargs):
-        if not self.callback or kwargs.get('sync'):
+        if not self._thread:
+            raise ServerError("Client not running")
+        if not self._callback or kwargs.get('sync'):
             item['sync'] = True
             self.request_queue.put(item)
-            return self.result_queue.get()
+            command, msg = self.result_queue.get()
+            if command == cmd.CMD_MESSAGE_ERROR:
+                raise ServerError(msg)
+            return msg
         else:
             self.request_queue.put(item)
 
@@ -167,7 +201,7 @@ class Client:
                                 'sha': _get_bytes(sha)}, **kwargs)
 
     def delete(self, sha, **kwargs):
-        """How many messages are available."""
+        """Delete a message."""
         return self._queue_msg({'cmd': cmd.CMD_MESSAGE_DELETE,
                                 'sha': _get_bytes(sha)}, **kwargs)
 
