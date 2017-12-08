@@ -226,9 +226,9 @@ class Client:
         return self._queue_msg({'cmd': cmd.CMD_MESSAGE_CDR_AVAILABLE},
                                **kwargs)
 
-    def get_cdr(self, start=0, end=-1, **kwargs):
+    def get_cdr(self, start=0, count=-1, **kwargs):
         """Request range of CDR messages"""
-        sha = encode_to_sha("{:d},{:d}".format(start, end))
+        sha = encode_to_sha("{:d},{:d}".format(start, count))
         return self._queue_msg({'cmd': cmd.CMD_MESSAGE_CDR,
                                 'sha': sha}, **kwargs)
 
