@@ -6,6 +6,8 @@ CMD_MESSAGE_PASSWORD = 2
 CMD_MESSAGE_MP3 = 3
 CMD_MESSAGE_DELETE = 4
 CMD_MESSAGE_VERSION = 5
+CMD_MESSAGE_CDR = 6
+CMD_MESSAGE_CDR_AVAILABLE = 7
 
 
 def commandstr(command):
@@ -22,6 +24,10 @@ def commandstr(command):
         msg = "CMD_MESSAGE_DELETE"
     elif command == CMD_MESSAGE_VERSION:
         msg = "CMD_MESSAGE_VERSION"
+    elif command == CMD_MESSAGE_CDR_AVAILABLE:
+        msg = "CMD_MESSAGE_CDR_AVAILABLE"
+    elif command == CMD_MESSAGE_CDR:
+        msg = "CMD_MESSAGE_CDR"
     else:
         msg = "CMD_MESSAGE_UNKNOWN"
     return msg

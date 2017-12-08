@@ -6,13 +6,18 @@ import select
 import json
 import configparser
 import logging
+import zlib
 
 import queue
 import threading
 
-from asterisk_mbox.utils import PollableQueue, recv_blocking, encode_password
+from distutils.version import StrictVersion
+from asterisk_mbox.utils import (PollableQueue, recv_blocking,
+                                 encode_password, encode_to_sha)
 
 import asterisk_mbox.commands as cmd
+
+__min_server_version__ = '0.5.0'
 
 
 class ServerError(Exception):
@@ -108,8 +113,17 @@ class Client:
     def _handle_msg(self, command, msg, request):
         if command == cmd.CMD_MESSAGE_ERROR:
             logging.warning("Received error: %s", msg.decode('utf-8'))
+        elif command == cmd.CMD_MESSAGE_VERSION:
+            min_ver = StrictVersion(__min_server_version__)
+            server_ver = StrictVersion(msg.decode('utf-8'))
+            if server_ver < min_ver:
+                raise ServerError("Server version is too low: {} < {}".format(
+                    msg.decode('utf-8'), __min_server_version__))
         elif command == cmd.CMD_MESSAGE_LIST:
             self._status = json.loads(msg.decode('utf-8'))
+            msg = self._status
+        elif command == cmd.CMD_MESSAGE_CDR:
+            self._status = json.loads(zlib.decompress(msg).decode('utf-8'))
             msg = self._status
 
         if self._callback and 'sync' not in request:
@@ -188,6 +202,7 @@ class Client:
             command, msg = self.result_queue.get()
             if command == cmd.CMD_MESSAGE_ERROR:
                 raise ServerError(msg)
+
             return msg
         else:
             self.request_queue.put(item)
@@ -205,6 +220,17 @@ class Client:
         """Delete a message."""
         return self._queue_msg({'cmd': cmd.CMD_MESSAGE_DELETE,
                                 'sha': _get_bytes(sha)}, **kwargs)
+
+    def cdr_count(self, **kwargs):
+        """Request count of CDR entries"""
+        return self._queue_msg({'cmd': cmd.CMD_MESSAGE_CDR_AVAILABLE},
+                               **kwargs)
+
+    def get_cdr(self, start=0, end=-1, **kwargs):
+        """Request range of CDR messages"""
+        sha = encode_to_sha("{:d},{:d}".format(start, end))
+        return self._queue_msg({'cmd': cmd.CMD_MESSAGE_CDR,
+                                'sha': sha}, **kwargs)
 
 
 def _callback(command, message):

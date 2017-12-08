@@ -5,8 +5,10 @@ import os
 import socket
 import logging
 import hashlib
+import re
+import codecs
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 
 class PollableQueue(queue.Queue):
@@ -83,3 +85,17 @@ def compare_password(expected, actual):
         msg.append("asterisk_mbox version mismatch.  Client: '" +
                    ver_act + "',  Server: '" + ver_exp + "'")
     return False, ". ".join(msg)
+
+
+def encode_to_sha(msg):
+    """coerce numeric list inst sha-looking bytearray"""
+    if isinstance(msg, str):
+        msg = msg.encode('utf-8')
+    return (codecs.encode(msg, "hex_codec") + (b'00' * 32))[:64]
+
+
+def decode_from_sha(sha):
+    """convert coerced sha back into numeric list"""
+    if isinstance(sha, str):
+        sha = sha.encode('utf-8')
+    return codecs.decode(re.sub(rb'(00)*$', b'', sha), "hex_codec")
