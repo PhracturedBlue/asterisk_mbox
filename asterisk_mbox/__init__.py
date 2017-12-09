@@ -156,6 +156,8 @@ class Client:
                     self._connect()
                     self._soc.send(_build_request(
                         {'cmd': cmd.CMD_MESSAGE_LIST}))
+                    self._soc.send(_build_request(
+                        {'cmd': cmd.CMD_MESSAGE_CDR_AVAILABLE}))
                     connected = True
                 except ConnectionRefusedError:
                     timeout = 5.0
