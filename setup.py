@@ -40,4 +40,5 @@ setup(
     url='https://github.com/PhracturedBlue/asterisk_mbox',
     keywords=['testing', 'asterisk', "mailbox", "voicemail"],
     classifiers=[],
+    install_requires=["packaging"],
 )

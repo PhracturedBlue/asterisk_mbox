@@ -11,7 +11,7 @@ import zlib
 import queue
 import threading
 
-from distutils.version import StrictVersion
+from packaging import version
 from asterisk_mbox.utils import (PollableQueue, recv_blocking,
                                  encode_password, encode_to_sha)
 
@@ -114,8 +114,8 @@ class Client:
         if command == cmd.CMD_MESSAGE_ERROR:
             logging.warning("Received error: %s", msg.decode('utf-8'))
         elif command == cmd.CMD_MESSAGE_VERSION:
-            min_ver = StrictVersion(__min_server_version__)
-            server_ver = StrictVersion(msg.decode('utf-8'))
+            min_ver = version.parse(__min_server_version__)
+            server_ver = version.parse(msg.decode('utf-8'))
             if server_ver < min_ver:
                 raise ServerError("Server version is too low: {} < {}".format(
                     msg.decode('utf-8'), __min_server_version__))
